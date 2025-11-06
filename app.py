@@ -575,7 +575,7 @@ def callback_calcular_e_salvar():
         
         st.success(f"Análise '{analise_ref}' salva com sucesso!")
         
-        # --- CORREÇÃO ---
+        # --- CORREÇÃO (de 2024-11-06) ---
         # Não chame outro callback. Apenas mude a página.
         # O Streamlit vai recarregar e renderizar a página de detalhe.
         st.session_state.pagina_atual = "detalhe"
@@ -693,12 +693,36 @@ def renderizar_detalhe_operacao():
     # 2. Encontra a análise mais recente
     analise_recente = extrair_analise_mais_recente(historico)
     
+    # --- NOVA SEÇÃO DE DADOS CADASTRAIS (MOVIMENTO) ---
+    st.subheader("Dados Cadastrais")
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Volume (R$)", f"R$ {st.session_state.op_volume:,.2f}")
+        
+        taxa_label = f"Taxa ({st.session_state.op_indexador})"
+        c2.metric(taxa_label, f"{st.session_state.op_taxa:,.2f}%")
+        
+        c3.metric("Prazo (meses)", f"{st.session_state.op_prazo}")
+        c4.metric("Tipo", st.session_state.op_tipo)
+
+        st.text(f"Emissor: {st.session_state.op_emissor}")
+        st.text(f"Sistema de Amortização: {st.session_state.op_amortizacao}")
+
+        # Formata as datas (já estão como datetime.date no state)
+        data_emissao = st.session_state.op_data_emissao
+        data_vencimento = st.session_state.op_data_vencimento
+        
+        c_date1, c_date2 = st.columns(2)
+        c_date1.metric("Data de Emissão", data_emissao.strftime('%d/%m/%Y'))
+        c_date2.metric("Data de Vencimento", data_vencimento.strftime('%d/%m/%Y'))
+    # --- FIM DA NOVA SEÇÃO ---
+
     if not analise_recente:
         st.warning("Esta operação ainda não possui análises.")
         if st.button("Criar Primeira Análise", type="primary"):
             callback_ir_para_analise(None) # Vai para o editor
             st.rerun()
-        return
+        return # Para aqui se não houver análise
 
     st.divider()
     
