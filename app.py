@@ -31,6 +31,7 @@ DEFAULTS = {
     'op_amortizacao': 'SAC',
     'op_data_emissao': default_emissao,
     'op_data_vencimento': default_emissao + relativedelta(months=+default_prazo_meses),
+    'op_tipo': 'Interna', # <-- ADICIONADO: Campo para tipo de operação
     'input_ltv': 75.0, 'input_demanda': 150000,
     'input_behavior_30_60': 0, 'input_behavior_60_90': 0, 'input_behavior_90_mais': 0,
     'input_comprometimento': 20.0,
@@ -425,23 +426,8 @@ def callback_calcular_e_salvar():
 # RENDERIZAÇÃO DAS PÁGINAS
 # ==============================================================================
 
-def renderizar_painel():
-    """Renderiza o painel principal com a lista de operações."""
-    st.header("Painel de Operações de CCI")
-    
-    if st.button("Cadastrar Nova Operação", type="primary", use_container_width=True):
-        callback_nova_operacao()
-        st.rerun() # Força o rerender para a página de análise
-
-    st.divider()
-    
-    db_data = carregar_db()
-    
-    if not db_data:
-        st.info("Nenhuma operação cadastrada. Clique em 'Cadastrar Nova Operação' para começar.")
-        return
-
-    st.subheader(f"Operações Cadastradas ({len(db_data)})")
+def renderizar_tabela_operacoes(operacoes_dict):
+    """Função auxiliar para renderizar a tabela de operações em um painel."""
     
     # Define as colunas do painel
     col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
@@ -452,7 +438,7 @@ def renderizar_painel():
     col5.markdown("**Excluir**")
 
     # Itera e exibe cada operação
-    for op_id, op_data in db_data.items():
+    for op_id, op_data in operacoes_dict.items():
         op_nome = op_data.get('op_nome', 'Sem Nome')
         op_codigo = op_data.get('op_codigo', 'N/A')
         
@@ -478,6 +464,53 @@ def renderizar_painel():
             # Botões de Ação
             c4.button("Analisar", key=f"analisar_{op_id}", on_click=callback_selecionar_operacao, args=(op_id, op_data), use_container_width=True)
             c5.button("🗑️", key=f"deletar_{op_id}", on_click=callback_deletar_operacao, args=(op_id,), use_container_width=True, help="Deletar operação")
+
+def renderizar_painel():
+    """Renderiza o painel principal com a lista de operações."""
+    st.header("Painel de Operações de CCI")
+    
+    if st.button("Cadastrar Nova Operação", type="primary", use_container_width=True):
+        callback_nova_operacao()
+        st.rerun() # Força o rerender para a página de análise
+
+    st.divider()
+    
+    db_data = carregar_db()
+    
+    if not db_data:
+        st.info("Nenhuma operação cadastrada. Clique em 'Cadastrar Nova Operação' para começar.")
+        return
+
+    # MODIFICADO: Remove subheader e colunas fixas daqui
+    # st.subheader(f"Operações Cadastradas ({len(db_data)})")
+    
+    # # Define as colunas do painel
+    # col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
+    # ... (loop for removido daqui e movido para renderizar_tabela_operacoes) ...
+
+    # ADICIONADO: Abas para segmentar operações
+    tab_interna, tab_externa = st.tabs(["Operações Internas", "Operações Externas"])
+
+    # Filtrar operações
+    ops_internas = {id: data for id, data in db_data.items() if data.get('op_tipo') == 'Interna'}
+    # Operações "Externas" ou "Não Classificadas" (antigas)
+    ops_externas = {id: data for id, data in db_data.items() if data.get('op_tipo') != 'Interna'}
+
+    with tab_interna:
+        st.subheader(f"Operações Internas Cadastradas ({len(ops_internas)})")
+        if not ops_internas:
+            st.info("Nenhuma operação interna cadastrada.")
+        else:
+            # Chamar a nova função auxiliar
+            renderizar_tabela_operacoes(ops_internas)
+
+    with tab_externa:
+        st.subheader(f"Operações Externas Cadastradas ({len(ops_externas)})")
+        if not ops_externas:
+            st.info("Nenhuma operação externa cadastrada.")
+        else:
+            # Chamar a nova função auxiliar
+            renderizar_tabela_operacoes(ops_externas)
             
     # CORREÇÃO: Removida a 'key' do st.divider, que estava causando o TypeError.
     # Esta key não é necessária para um elemento decorativo.
@@ -521,6 +554,16 @@ def renderizar_analise():
                 key='op_data_vencimento',
                 min_value=st.session_state.op_data_emissao
             )
+        
+        # ADICIONADO: Seletor para tipo de operação
+        st.radio(
+            "Tipo de Operação:", 
+            ["Interna", "Externa"], 
+            key='op_tipo', 
+            horizontal=True, 
+            help="Classifique a operação como Interna (da própria gestora) ou Externa."
+        )
+        
         st.text_input("Emissor da CCI (Ex: Banco, Securitizadora):", key='op_emissor')
 
     with tab_inputs:
