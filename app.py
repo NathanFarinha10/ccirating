@@ -476,7 +476,9 @@ def renderizar_painel():
             c4.button("Analisar", key=f"analisar_{op_id}", on_click=callback_selecionar_operacao, args=(op_id, op_data), use_container_width=True)
             c5.button("🗑️", key=f"deletar_{op_id}", on_click=callback_deletar_operacao, args=(op_id,), use_container_width=True, help="Deletar operação")
             
-    st.divider(key="bottom_divider_painel")
+    # CORREÇÃO: Removida a 'key' do st.divider, que estava causando o TypeError.
+    # Esta key não é necessária para um elemento decorativo.
+    st.divider()
 
 
 def renderizar_analise():
