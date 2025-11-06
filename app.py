@@ -443,13 +443,16 @@ def callback_ir_para_analise(analise_ref_para_editar):
             
             # Carrega Inputs
             inputs = dados_analise.get('inputs', {})
-            st.session_state.input_ltv = inputs.get('input_ltv', DEFAULTS['input_ltv'])
-            st.session_state.input_demanda = inputs.get('input_demanda', DEFAULTS['input_demanda'])
+            # --- CORREÇÃO AQUI ---
+            # Use DEFAULTS_ANALISE, não DEFAULTS, para os valores padrão
+            st.session_state.input_ltv = inputs.get('input_ltv', DEFAULTS_ANALISE['input_ltv'])
+            st.session_state.input_demanda = inputs.get('input_demanda', DEFAULTS_ANALISE['input_demanda'])
             st.session_state.input_behavior_30_60 = inputs.get('input_behavior_30_60', 0)
             st.session_state.input_behavior_60_90 = inputs.get('input_behavior_60_90', 0)
             st.session_state.input_behavior_90_mais = inputs.get('input_behavior_90_mais', 0)
-            st.session_state.input_comprometimento = inputs.get('input_comprometimento', DEFAULTS['input_comprometimento'])
+            st.session_state.input_comprometimento = inputs.get('input_comprometimento', DEFAULTS_ANALISE['input_comprometimento'])
             st.session_state.input_inad_30_60 = inputs.get('input_inad_30_60', 0)
+            # --- FIM DA CORREÇÃO ---
             st.session_state.input_inad_60_90 = inputs.get('input_inad_60_90', 0)
             st.session_state.input_inad_90_mais = inputs.get('input_inad_90_mais', 0)
             
