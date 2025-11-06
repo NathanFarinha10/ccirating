@@ -18,9 +18,6 @@ from google.oauth2 import service_account
 # CONFIGURAÇÃO DO BANCO DE DADOS (FIRESTORE)
 # ==============================================================================
 
-# O nome do arquivo JSON local não é mais usado
-# DB_FILE = "operacoes_db.json"
-
 # Coleção que usaremos no Firestore
 DB_COLLECTION = "cci_operacoes"
 
@@ -57,7 +54,9 @@ def get_firestore_client():
         
         # Verifica se o app já foi inicializado
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(credentials.Certificate(creds_json))
+            # CORREÇÃO: Passa o dicionário 'creds_json' diretamente.
+            cred_obj = credentials.Certificate(creds_json)
+            firebase_admin.initialize_app(cred_obj)
             
         return firestore.client()
     
@@ -81,9 +80,6 @@ def carregar_db():
     except Exception as e:
         st.error(f"Erro ao carregar dados do Firestore: {e}")
         return {}
-
-# A função salvar_db(data) não é mais necessária, pois salvaremos/deletaremos
-# documentos individualmente, o que é mais eficiente.
 
 # ==============================================================================
 # INICIALIZAÇÃO E FUNÇÕES AUXILIARES
@@ -112,11 +108,20 @@ def coletar_dados_da_sessao():
     dados = {}
     for key in DEFAULTS.keys():
         if key in st.session_state:
-            dados[key] = st.session_state[key]
+            value = st.session_state[key]
+            
+            # --- CORREÇÃO: CONVERTE DATE PARA DATETIME ANTES DE SALVAR ---
+            # O Firestore espera datetime.datetime, não datetime.date
+            if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+                # Converte para datetime adicionando a hora 00:00:00
+                dados[key] = datetime.datetime.combine(value, datetime.datetime.min.time())
+            else:
+                dados[key] = value
+            # --- FIM DA CORREÇÃO ---
+            
     return dados
 
 def create_gauge_chart(score, title):
-    # ... (código existente, sem "simplificado") ...
     """Cria um gráfico de velocímetro para a nota (escala 2-10)."""
     if score is None: score = 2.0
     fig = go.Figure(go.Indicator(
@@ -134,7 +139,6 @@ def create_gauge_chart(score, title):
     return fig
 
 def converter_nota_para_rating(nota):
-    # ... (código existente, sem "simplificado") ...
     """Converte a nota (10, 8, 6, 4, 2) para o rating (A+ ... C)."""
     if nota == 10: return 'A+'
     elif nota == 8: return 'A'
@@ -146,7 +150,6 @@ def converter_nota_para_rating(nota):
 class PDF(FPDF):
     """Classe de PDF personalizada para o relatório."""
     def header(self):
-        # ... (código existente, sem "simplificado") ...
         try:
             if os.path.exists("assets/seu_logo.png"):
                 self.image("assets/seu_logo.png", x=10, y=8, w=33)
@@ -160,30 +163,34 @@ class PDF(FPDF):
         self.ln(20)
 
     def footer(self):
-        # ... (código existente) ...
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
     def _write_text(self, text):
-        # ... (código existente) ...
         return str(text).encode('latin-1', 'replace').decode('latin-1')
 
     def chapter_title(self, title):
-        # ... (código existente) ...
         self.set_font('Arial', 'B', 14)
         self.multi_cell(0, 10, self._write_text(title), 0, 'L')
         self.ln(4)
 
     def TabelaCadastro(self, ss):
-        # ... (código existente) ...
         self.set_font('Arial', '', 10)
         line_height = self.font_size * 1.5
         col_width = self.epw / 4
+        
+        # Garante que as datas sejam formatadas corretamente, mesmo se ainda não foram convertidas
+        data_emissao = ss.op_data_emissao
+        if isinstance(data_emissao, datetime.datetime): data_emissao = data_emissao.date()
+        
+        data_vencimento = ss.op_data_vencimento
+        if isinstance(data_vencimento, datetime.datetime): data_vencimento = data_vencimento.date()
+
         data = {
             "Nome da Operação:": ss.op_nome, "Código/Série:": ss.op_codigo,
             "Volume Emitido:": f"R$ {ss.op_volume:,.2f}", "Taxa:": f"{ss.op_indexador} {ss.op_taxa}% a.a.",
-            "Data de Emissão:": ss.op_data_emissao.strftime('%d/%m/%Y'), "Vencimento:": ss.op_data_vencimento.strftime('%d/%m/%Y'),
+            "Data de Emissão:": data_emissao.strftime('%d/%m/%Y'), "Vencimento:": data_vencimento.strftime('%d/%m/%Y'),
             "Emissor:": ss.op_emissor, "Sistema Amortização:": ss.op_amortizacao,
         }
         for i, (label, value) in enumerate(data.items()):
@@ -196,7 +203,6 @@ class PDF(FPDF):
         self.ln(10)
 
     def TabelaScorecard(self, ss):
-        # ... (código existente, sem "simplificado") ...
         self.set_font('Arial', 'B', 10)
         line_height = self.font_size * 1.5
         col_widths = [self.epw * 0.4, self.epw * 0.15, self.epw * 0.15, self.epw * 0.15, self.epw * 0.15]
@@ -258,7 +264,6 @@ def gerar_relatorio_pdf(ss):
 # ==============================================================================
 
 def calcular_nota_ltv(ltv):
-    # ... (código existente) ...
     ltv_perc = ltv
     if ltv_perc <= 60: return 10
     elif ltv_perc <= 70: return 8
@@ -267,7 +272,6 @@ def calcular_nota_ltv(ltv):
     else: return 2
 
 def calcular_nota_demanda(demanda):
-    # ... (código existente) ...
     if demanda > 200000: return 10
     elif demanda >= 100000: return 8
     elif demanda >= 50000: return 6
@@ -275,7 +279,6 @@ def calcular_nota_demanda(demanda):
     else: return 2
 
 def calcular_nota_behavior(soma_behavior):
-    # ... (código existente) ...
     if soma_behavior == 0: return 10
     elif soma_behavior == 2: return 8
     elif soma_behavior == 4: return 6
@@ -283,7 +286,6 @@ def calcular_nota_behavior(soma_behavior):
     else: return 2 # > 6
 
 def calcular_nota_comprometimento(comprometimento):
-    # ... (código existente) ...
     comp_perc = comprometimento
     if comp_perc < 15: return 10
     elif comp_perc <= 20: return 8
@@ -292,7 +294,6 @@ def calcular_nota_comprometimento(comprometimento):
     else: return 2 # > 30
 
 def calcular_nota_inadimplencia(soma_inad):
-    # ... (código existente) ...
     if soma_inad == 0: return 10
     elif soma_inad <= 4: return 8 # 0-4 (mas 0 já foi pego, então 1-4)
     elif soma_inad <= 6: return 6 # 4-6 (mas >4, então 5-6)
@@ -372,17 +373,18 @@ def callback_selecionar_operacao(op_id, op_data):
 
     # Carrega todos os dados do banco para o session_state
     for key, value in op_data.items():
-        # Converte datas de string (do JSON) para objeto date
-        if key in ['op_data_emissao', 'op_data_vencimento'] and isinstance(value, str):
-            try:
-                st.session_state[key] = datetime.datetime.strptime(value, '%Y-%m-%d').date()
-            except ValueError:
-                st.session_state[key] = DEFAULTS[key] # Usa o padrão se a data for inválida
+        
+        # --- CORREÇÃO: CONVERTE DATETIME (DO FIRESTORE) PARA DATE (PARA O WIDGET) ---
+        # O Firestore retorna datetime.datetime, mas o st.date_input precisa de datetime.date
+        if key in ['op_data_emissao', 'op_data_vencimento'] and isinstance(value, datetime.datetime):
+            st.session_state[key] = value.date() # Pega apenas a parte da data
+        # --- FIM DA CORREÇÃO ---
+            
         else:
             st.session_state[key] = value
 
 def callback_deletar_operacao(op_id):
-    """Deleta uma operação do banco de dados JSON."""
+    """Deleta uma operação do banco de dados Firestore."""
     db = get_firestore_client()
     if db is None:
         return
@@ -394,7 +396,7 @@ def callback_deletar_operacao(op_id):
         st.error(f"Erro ao deletar operação: {e}")
 
 def callback_calcular_e_salvar():
-    """Calcula o rating e salva a operação no banco de dados JSON."""
+    """Calcula o rating e salva a operação no banco de dados Firestore."""
     if not st.session_state.operacao_selecionada_id:
         st.error("Erro: ID da operação não definido. Tente novamente.")
         return
@@ -402,7 +404,7 @@ def callback_calcular_e_salvar():
     # 1. Calcula os scores
     calcular_rating() 
     
-    # 2. Coleta dados da sessão
+    # 2. Coleta dados da sessão (já convertendo datas)
     dados_para_salvar = coletar_dados_da_sessao()
     
     # 3. Carrega o DB, atualiza e salva
@@ -670,3 +672,4 @@ if st.session_state.pagina_atual == "painel":
     renderizar_painel()
 else:
     renderizar_analise()
+```eof
