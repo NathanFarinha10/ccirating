@@ -536,6 +536,8 @@ def callback_calcular_e_salvar():
         # Atualiza o session_state local para refletir o salvamento
         st.session_state.historico_analises = historia_atual
         
+        carregar_db.clear() # <-- ADICIONADO: Limpa o cache para forçar a releitura do painel
+        
         # Volta para a página de detalhe
         callback_voltar_detalhe()
 
