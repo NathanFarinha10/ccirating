@@ -571,16 +571,14 @@ def callback_calcular_e_salvar():
         carregar_db.clear()
         
         # Atualiza o histórico no session_state local
+        if 'historico_analises' not in st.session_state or not isinstance(st.session_state.historico_analises, dict):
+            st.session_state.historico_analises = {}
         st.session_state.historico_analises[analise_ref] = pacote_analise
         
         st.success(f"Análise '{analise_ref}' salva com sucesso!")
         
-        # --- CORREÇÃO (de 2024-11-06) ---
-        # Não chame outro callback. Apenas mude a página.
-        # O Streamlit vai recarregar e renderizar a página de detalhe.
+        # Manda o usuário para a página de detalhe
         st.session_state.pagina_atual = "detalhe"
-        # callback_voltar_detalhe() # REMOVIDO
-        # --- FIM DA CORREÇÃO ---
         
     except Exception as e:
         st.error(f"Erro ao salvar no Firestore: {e}")
@@ -693,7 +691,7 @@ def renderizar_detalhe_operacao():
     # 2. Encontra a análise mais recente
     analise_recente = extrair_analise_mais_recente(historico)
     
-    # --- NOVA SEÇÃO DE DADOS CADASTRAIS (MOVIMENTO) ---
+    # --- SEÇÃO DE DADOS CADASTRAIS ---
     st.subheader("Dados Cadastrais")
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
@@ -715,7 +713,7 @@ def renderizar_detalhe_operacao():
         c_date1, c_date2 = st.columns(2)
         c_date1.metric("Data de Emissão", data_emissao.strftime('%d/%m/%Y'))
         c_date2.metric("Data de Vencimento", data_vencimento.strftime('%d/%m/%Y'))
-    # --- FIM DA NOVA SEÇÃO ---
+    # --- FIM DA SEÇÃO ---
 
     if not analise_recente:
         st.warning("Esta operação ainda não possui análises.")
@@ -797,6 +795,10 @@ def renderizar_analise():
     """Renderiza a página de análise (abas de cadastro, inputs, resultado)."""
     
     # Verifica se é uma análise nova ou edição
+    # Garante que 'historico_analises' seja um dicionário
+    if 'historico_analises' not in st.session_state or not isinstance(st.session_state.historico_analises, dict):
+        st.session_state.historico_analises = {}
+        
     is_primeira_analise = (st.session_state.historico_analises == {})
     
     if is_primeira_analise:
@@ -822,37 +824,52 @@ def renderizar_analise():
     with tab0:
         st.header("Informações Gerais da Operação (Dados Cadastrais)")
         
-        # --- LÓGICA DE TRAVAMENTO ---
-        # Se NÃO for a primeira análise, desabilita os campos
-        campos_desabilitados = not is_primeira_analise 
-        
-        if campos_desabilitados:
+        if not is_primeira_analise:
             st.info("Os dados cadastrais são compartilhados por todas as análises e não podem ser editados após a primeira análise.")
+            
+            # --- MODO VISUALIZAÇÃO (CAMPOS TRAVADOS) ---
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Volume (R$)", f"R$ {st.session_state.op_volume:,.2f}")
+                taxa_label = f"Taxa ({st.session_state.op_indexador})"
+                c2.metric(taxa_label, f"{st.session_state.op_taxa:,.2f}%")
+                c3.metric("Prazo (meses)", f"{st.session_state.op_prazo}")
+                c4.metric("Tipo", st.session_state.op_tipo)
+                st.text(f"Emissor: {st.session_state.op_emissor}")
+                st.text(f"Sistema de Amortização: {st.session_state.op_amortizacao}")
+                
+                data_emissao = st.session_state.op_data_emissao
+                data_vencimento = st.session_state.op_data_vencimento
+                c_date1, c_date2 = st.columns(2)
+                c_date1.metric("Data de Emissão", data_emissao.strftime('%d/%m/%Y'))
+                c_date2.metric("Data de Vencimento", data_vencimento.strftime('%d/%m/%Y'))
+            # --- FIM DO MODO VISUALIZAÇÃO ---
+
         else:
             st.info("Preencha os dados cadastrais. Eles serão salvos com a primeira análise e não poderão ser alterados depois.")
-        # --- FIM DA LÓGICA ---
             
-        col1, col2 = st.columns(2)
-        with col1:
-            st.text_input("Nome/Identificação da CCI:", key='op_nome', disabled=campos_desabilitados)
-            st.number_input("Volume da Operação (R$):", key='op_volume', format="%.2f", disabled=campos_desabilitados)
-            st.selectbox("Sistema de Amortização:", ["SAC", "Price"], key='op_amortizacao', disabled=campos_desabilitados)
-            st.date_input("Data de Emissão:", key='op_data_emissao', disabled=campos_desabilitados)
-        with col2:
-            st.text_input("Código/Série:", key='op_codigo', disabled=campos_desabilitados)
-            c1_taxa, c2_taxa = st.columns([1, 2])
-            with c1_taxa: st.selectbox("Indexador:", ["IPCA +", "CDI +", "Pré-fixado"], key='op_indexador', disabled=campos_desabilitados)
-            with c2_taxa: st.number_input("Taxa (% a.a.):", key='op_taxa', format="%.2f", disabled=campos_desabilitados)
-            st.number_input("Prazo Remanescente (meses):", key='op_prazo', step=1, disabled=campos_desabilitados)
-            st.date_input(
-                "Data de Vencimento:",
-                key='op_data_vencimento',
-                min_value=st.session_state.op_data_emissao,
-                disabled=campos_desabilitados
-            )
-        
-        st.radio("Tipo de Operação:", ["Interna", "Externa"], key='op_tipo', horizontal=True, disabled=campos_desabilitados)
-        st.text_input("Emissor da CCI (Ex: Banco, Securitizadora):", key='op_emissor', disabled=campos_desabilitados)
+            # --- MODO EDIÇÃO (PRIMEIRA ANÁLISE) ---
+            col1, col2 = st.columns(2)
+            with col1:
+                st.text_input("Nome/Identificação da CCI:", key='op_nome')
+                st.number_input("Volume da Operação (R$):", key='op_volume', format="%.2f")
+                st.selectbox("Sistema de Amortização:", ["SAC", "Price"], key='op_amortizacao')
+                st.date_input("Data de Emissão:", key='op_data_emissao')
+            with col2:
+                st.text_input("Código/Série:", key='op_codigo')
+                c1_taxa, c2_taxa = st.columns([1, 2])
+                with c1_taxa: st.selectbox("Indexador:", ["IPCA +", "CDI +", "Pré-fixado"], key='op_indexador')
+                with c2_taxa: st.number_input("Taxa (% a.a.):", key='op_taxa', format="%.2f")
+                st.number_input("Prazo Remanescente (meses):", key='op_prazo', step=1)
+                st.date_input(
+                    "Data de Vencimento:",
+                    key='op_data_vencimento',
+                    min_value=st.session_state.op_data_emissao
+                )
+            
+            st.radio("Tipo de Operação:", ["Interna", "Externa"], key='op_tipo', horizontal=True)
+            st.text_input("Emissor da CCI (Ex: Banco, Securitizadora):", key='op_emissor')
+            # --- FIM DO MODO EDIÇÃO ---
 
     # --- ABA 1: INPUTS DA ANÁLISE ---
     with tab_inputs:
@@ -899,6 +916,8 @@ def renderizar_analise():
             callback_calcular_e_salvar()
             # Se o callback for bem-sucedido, ele mesmo mudará a página
             # Se falhar (ex: validação), ele mostrará um erro e ficará nesta página
+            # E o rerun será acionado para mostrar a nova página
+            st.rerun()
 
     # --- ABA 2: RESULTADO (PREVIEW) ---
     with tab_res:
