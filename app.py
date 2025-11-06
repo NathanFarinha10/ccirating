@@ -24,8 +24,9 @@ DB_COLLECTION = "cci_operacoes"
 # Valores Padrão para um novo formulário
 default_emissao = datetime.date(2024, 5, 1)
 default_prazo_meses = 120 # 10 anos
-DEFAULTS = {
-    # --- Dados Cadastrais (Estáticos) ---
+
+# --- DEFAULTS DIVIDIDOS ---
+DEFAULTS_CADASTRO = {
     'op_nome': 'Nova Operação', 'op_codigo': 'CCI-NEW',
     'op_emissor': 'Banco Exemplo S.A.', 'op_volume': 1000000.0,
     'op_taxa': 10.0, 'op_indexador': 'IPCA +', 'op_prazo': default_prazo_meses,
@@ -33,9 +34,9 @@ DEFAULTS = {
     'op_data_emissao': default_emissao,
     'op_data_vencimento': default_emissao + relativedelta(months=+default_prazo_meses),
     'op_tipo': 'Interna',
-    'historico_analises': {}, # Novo campo para armazenar o histórico
-    
-    # --- Dados da Análise (Dinâmicos - representam o formulário ATIVO) ---
+}
+
+DEFAULTS_ANALISE = {
     'analise_ref_atual': '', # Chave da análise (ex: 2025-Q4)
     'input_ltv': 75.0, 'input_demanda': 150000,
     'input_behavior_30_60': 0, 'input_behavior_60_90': 0, 'input_behavior_90_mais': 0,
@@ -45,6 +46,10 @@ DEFAULTS = {
     'scores_operacao': {}, # Resultados da análise ativa
     'rating_final_operacao': {}, # Resultados da análise ativa
 }
+
+# Combinação para inicialização
+DEFAULTS = {**DEFAULTS_CADASTRO, **DEFAULTS_ANALISE, 'historico_analises': {}}
+# --- FIM DA DIVISÃO ---
 
 @st.cache_resource
 def get_firestore_client():
@@ -93,18 +98,19 @@ def inicializar_session_state():
         st.session_state.operacao_selecionada_id = None
         
         # Inicializa os campos do formulário com os padrões
+        limpar_formulario_cadastro()
         limpar_formulario_analise()
+        st.session_state.historico_analises = {}
+
+def limpar_formulario_cadastro():
+    """Reseta o session_state para os valores padrão de CADASTRO."""
+    for key, value in DEFAULTS_CADASTRO.items():
+        st.session_state[key] = value
 
 def limpar_formulario_analise():
-    """Reseta o session_state para os valores padrão de um novo formulário."""
-    # Salva o ID da operação se estivermos editando
-    op_id = st.session_state.get('operacao_selecionada_id') 
-    
-    for key, value in DEFAULTS.items():
+    """Reseta o session_state para os valores padrão de ANÁLISE."""
+    for key, value in DEFAULTS_ANALISE.items():
         st.session_state[key] = value
-        
-    # Restaura o ID da operação
-    st.session_state.operacao_selecionada_id = op_id
 
 def coletar_dados_estaticos_da_sessao():
     """Coleta apenas os dados cadastrais (estáticos) da operação."""
@@ -381,7 +387,9 @@ def calcular_rating():
 def callback_voltar_painel():
     """Volta para o painel e limpa o formulário."""
     st.session_state.pagina_atual = "painel"
+    limpar_formulario_cadastro()
     limpar_formulario_analise()
+    st.session_state.historico_analises = {}
     st.session_state.operacao_selecionada_id = None
 
 def callback_voltar_detalhe():
@@ -391,14 +399,20 @@ def callback_voltar_detalhe():
 
 def callback_nova_operacao():
     """Prepara o estado para cadastrar uma nova operação e sua primeira análise."""
-    limpar_formulario_analise() 
+    limpar_formulario_cadastro()
+    limpar_formulario_analise()
+    st.session_state.historico_analises = {}
     st.session_state.operacao_selecionada_id = str(uuid.uuid4()) # Gera um novo ID
     st.session_state.analise_ref_atual = "" # Força o usuário a digitar
     st.session_state.pagina_atual = "analise"
 
 def callback_selecionar_operacao(op_id, op_data):
     """(Do Painel -> Detalhe) Carrega dados de uma op para a página de DETALHE."""
-    limpar_formulario_analise() 
+    # Limpa TUDO primeiro para garantir um estado limpo
+    limpar_formulario_cadastro() 
+    limpar_formulario_analise()
+    st.session_state.historico_analises = {}
+    
     st.session_state.pagina_atual = "detalhe"
     st.session_state.operacao_selecionada_id = op_id
 
@@ -415,20 +429,9 @@ def callback_ir_para_analise(analise_ref_para_editar):
     
     if analise_ref_para_editar is None:
         # --- CRIAR NOVA ANÁLISE ---
-        # Mantém dados cadastrais, limpa apenas os de análise
-        st.session_state.analise_ref_atual = "" # Força usuário a digitar
-        st.session_state.input_ltv = DEFAULTS['input_ltv']
-        st.session_state.input_demanda = DEFAULTS['input_demanda']
-        st.session_state.input_behavior_30_60 = 0
-        st.session_state.input_behavior_60_90 = 0
-        st.session_state.input_behavior_90_mais = 0
-        st.session_state.input_comprometimento = DEFAULTS['input_comprometimento']
-        st.session_state.input_inad_30_60 = 0
-        st.session_state.input_inad_60_90 = 0
-        st.session_state.input_inad_90_mais = 0
-        st.session_state.justificativa_final = ""
-        st.session_state.scores_operacao = {}
-        st.session_state.rating_final_operacao = {}
+        # CORREÇÃO: Chama o 'limpar_formulario_analise' para resetar APENAS a análise
+        limpar_formulario_analise()
+        # Os dados cadastrais (op_nome, etc.) que já estão no session_state são preservados.
         
     else:
         # --- EDITAR ANÁLISE EXISTENTE ---
