@@ -672,4 +672,3 @@ if st.session_state.pagina_atual == "painel":
     renderizar_painel()
 else:
     renderizar_analise()
-```eof
