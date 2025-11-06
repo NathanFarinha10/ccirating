@@ -367,10 +367,13 @@ def callback_nova_operacao():
 def callback_selecionar_operacao(op_id, op_data):
     """Carrega os dados de uma operação existente no session_state para análise."""
     st.session_state.pagina_atual = "analise"
-    st.session_state.operacao_selecionada_id = op_id
+    # st.session_state.operacao_selecionada_id = op_id # <-- PROBLEMA ESTAVA AQUI
     
-    # Limpa o formulário antes de carregar
+    # Limpa o formulário ANTES de carregar
     limpar_formulario_analise() 
+
+    # Define o ID da operação que estamos carregando *APÓS* limpar
+    st.session_state.operacao_selecionada_id = op_id
 
     # Carrega todos os dados do banco para o session_state
     for key, value in op_data.items():
