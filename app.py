@@ -54,11 +54,10 @@ def get_firestore_client():
         # Tenta carregar as credenciais dos Secrets do Streamlit
         # O Streamlit transforma o seu secrets.toml em um dicionário
         creds_json = dict(st.secrets["firebase_service_account"])
-        creds = service_account.Credentials.from_service_account_info(creds_json)
         
         # Verifica se o app já foi inicializado
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(credentials.Certificate(creds))
+            firebase_admin.initialize_app(credentials.Certificate(creds_json))
             
         return firestore.client()
     
