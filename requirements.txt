@@ -6,3 +6,6 @@ plotly
 geopy
 google-generativeai
 fpdf2
+firebase-admin
+google-cloud-firestore
+google-auth
