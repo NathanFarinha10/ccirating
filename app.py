@@ -575,8 +575,12 @@ def callback_calcular_e_salvar():
         
         st.success(f"Análise '{analise_ref}' salva com sucesso!")
         
-        # Volta para a página de detalhe após salvar
-        callback_voltar_detalhe()
+        # --- CORREÇÃO ---
+        # Não chame outro callback. Apenas mude a página.
+        # O Streamlit vai recarregar e renderizar a página de detalhe.
+        st.session_state.pagina_atual = "detalhe"
+        # callback_voltar_detalhe() # REMOVIDO
+        # --- FIM DA CORREÇÃO ---
         
     except Exception as e:
         st.error(f"Erro ao salvar no Firestore: {e}")
