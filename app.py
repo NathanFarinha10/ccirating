@@ -469,7 +469,8 @@ def callback_deletar_operacao(op_id):
         # Como o histórico está no documento, isso deleta tudo.
         db.collection(DB_COLLECTION).document(op_id).delete()
         st.toast(f"Operação {op_id} deletada.", icon="🗑️")
-        st.rerun() # Força recarregar o painel
+        # st.rerun() # <-- REMOVIDO: Esta linha causa o aviso "no-op" e é desnecessária.
+        carregar_db.clear() # <-- ADICIONADO: Limpa o cache para forçar a releitura do DB.
     except Exception as e:
         st.error(f"Erro ao deletar operação: {e}")
 
