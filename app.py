@@ -25,21 +25,25 @@ DB_COLLECTION = "cci_operacoes"
 default_emissao = datetime.date(2024, 5, 1)
 default_prazo_meses = 120 # 10 anos
 DEFAULTS = {
+    # --- Dados Cadastrais (Estáticos) ---
     'op_nome': 'Nova Operação', 'op_codigo': 'CCI-NEW',
     'op_emissor': 'Banco Exemplo S.A.', 'op_volume': 1000000.0,
     'op_taxa': 10.0, 'op_indexador': 'IPCA +', 'op_prazo': default_prazo_meses,
     'op_amortizacao': 'SAC',
     'op_data_emissao': default_emissao,
     'op_data_vencimento': default_emissao + relativedelta(months=+default_prazo_meses),
-    'op_tipo': 'Interna', # <-- ADICIONADO: Campo para tipo de operação
+    'op_tipo': 'Interna',
+    'historico_analises': {}, # Novo campo para armazenar o histórico
+    
+    # --- Dados da Análise (Dinâmicos - representam o formulário ATIVO) ---
+    'analise_ref_atual': '', # Chave da análise (ex: 2025-Q4)
     'input_ltv': 75.0, 'input_demanda': 150000,
     'input_behavior_30_60': 0, 'input_behavior_60_90': 0, 'input_behavior_90_mais': 0,
     'input_comprometimento': 20.0,
     'input_inad_30_60': 0, 'input_inad_60_90': 0, 'input_inad_90_mais': 0,
     'justificativa_final': '',
-    # Chaves para os resultados
-    'scores_operacao': {},
-    'rating_final_operacao': {},
+    'scores_operacao': {}, # Resultados da análise ativa
+    'rating_final_operacao': {}, # Resultados da análise ativa
 }
 
 @st.cache_resource
@@ -49,29 +53,22 @@ def get_firestore_client():
     Usa st.cache_resource para garantir que isso seja executado apenas uma vez.
     """
     try:
-        # Tenta carregar as credenciais dos Secrets do Streamlit
-        # O Streamlit transforma o seu secrets.toml em um dicionário
         creds_json = dict(st.secrets["firebase_service_account"])
-        
-        # Verifica se o app já foi inicializado
         if not firebase_admin._apps:
-            # CORREÇÃO: Passa o dicionário 'creds_json' diretamente.
             cred_obj = credentials.Certificate(creds_json)
             firebase_admin.initialize_app(cred_obj)
-            
         return firestore.client()
-    
     except Exception as e:
         st.error("Erro ao conectar ao Firestore. Verifique suas credenciais nos Secrets.")
         st.error(e)
         return None
 
+@st.cache_data(ttl=300) # Cache de 5 minutos
 def carregar_db():
     """Carrega os dados do Firestore."""
     db = get_firestore_client()
     if db is None:
         return {}
-        
     try:
         operacoes_ref = db.collection(DB_COLLECTION).stream()
         db_data = {}
@@ -92,7 +89,7 @@ def inicializar_session_state():
         st.session_state.state_initialized_cci = True
         
         # Controle de página
-        st.session_state.pagina_atual = "painel" # 'painel' ou 'analise'
+        st.session_state.pagina_atual = "painel" # 'painel', 'detalhe' ou 'analise'
         st.session_state.operacao_selecionada_id = None
         
         # Inicializa os campos do formulário com os padrões
@@ -100,25 +97,49 @@ def inicializar_session_state():
 
 def limpar_formulario_analise():
     """Reseta o session_state para os valores padrão de um novo formulário."""
+    # Salva o ID da operação se estivermos editando
+    op_id = st.session_state.get('operacao_selecionada_id') 
+    
     for key, value in DEFAULTS.items():
         st.session_state[key] = value
-    st.session_state.operacao_selecionada_id = None
+        
+    # Restaura o ID da operação
+    st.session_state.operacao_selecionada_id = op_id
 
-def coletar_dados_da_sessao():
-    """Coleta todos os dados relevantes do st.session_state para salvar."""
-    dados = {}
-    for key in DEFAULTS.keys():
+def coletar_dados_estaticos_da_sessao():
+    """Coleta apenas os dados cadastrais (estáticos) da operação."""
+    dados_estaticos = {}
+    chaves_estaticas = ['op_nome', 'op_codigo', 'op_emissor', 'op_volume', 'op_taxa', 
+                        'op_indexador', 'op_prazo', 'op_amortizacao', 'op_data_emissao', 
+                        'op_data_vencimento', 'op_tipo']
+    
+    for key in chaves_estaticas:
         if key in st.session_state:
             value = st.session_state[key]
-            
-            # --- CORREÇÃO DATAS: CONVERTE DATE PARA DATETIME ANTES DE SALVAR ---
             if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
-                # Converte para datetime adicionando a hora 00:00:00
-                dados[key] = datetime.datetime.combine(value, datetime.datetime.min.time())
+                dados_estaticos[key] = datetime.datetime.combine(value, datetime.datetime.min.time())
             else:
-                dados[key] = value
-            
-    return dados
+                dados_estaticos[key] = value
+    return dados_estaticos
+
+def get_latest_analysis(historico_analises):
+    """
+    Extrai a análise mais recente do histórico.
+    Retorna a (referencia, dados_da_analise)
+    """
+    if not historico_analises:
+        return None, None
+        
+    try:
+        # Encontra a análise com o campo 'data_analise' mais recente
+        latest_ref = max(
+            historico_analises, 
+            key=lambda k: historico_analises[k].get('data_analise', datetime.datetime.min)
+        )
+        return latest_ref, historico_analises[latest_ref]
+    except Exception:
+        # Fallback para o primeiro item, caso 'data_analise' falhe
+        return next(iter(historico_analises.items()))
 
 def create_gauge_chart(score, title):
     """Cria um gráfico de velocímetro para a nota (escala 2-10)."""
@@ -180,7 +201,6 @@ class PDF(FPDF):
         line_height = self.font_size * 1.5
         col_width = self.epw / 4
         
-        # Garante que as datas sejam formatadas corretamente
         data_emissao = ss.op_data_emissao
         if isinstance(data_emissao, datetime.datetime): data_emissao = data_emissao.date()
         
@@ -211,17 +231,15 @@ class PDF(FPDF):
         self.ln(line_height)
         
         self.set_font('Arial', '', 10)
-        scores = ss.scores_operacao
+        # Usa os scores da análise ativa no formulário
+        scores = ss.scores_operacao 
         nomes_inputs = {
-            'ltv': '1. LTV',
-            'demanda': '2. Demanda',
-            'behavior': '3. Behavior',
-            'comprometimento': '4. Comprometimento de Renda',
-            'inadimplencia': '5. Inadimplência'
+            'ltv': '1. LTV', 'demanda': '2. Demanda', 'behavior': '3. Behavior',
+            'comprometimento': '4. Comprometimento de Renda', 'inadimplencia': '5. Inadimplência'
         }
         
         for key, nome in nomes_inputs.items():
-            nota = scores.get(key, 2) # Default 2 se não calculado
+            nota = scores.get(key, 2)
             rating = converter_nota_para_rating(nota)
             peso = 0.20
             row = [nome, f"{peso*100:.0f}%", f"{int(nota):.0f}", rating, f"{nota * peso:.2f}"]
@@ -230,17 +248,18 @@ class PDF(FPDF):
         self.ln(10)
 
 def gerar_relatorio_pdf(ss):
-    """Gera o PDF com os dados do session_state."""
+    """Gera o PDF com os dados do session_state (análise ativa)."""
     try:
         pdf = PDF()
         pdf.add_page()
-        pdf.chapter_title('1. Dados Cadastrais da Operação')
+        pdf.chapter_title(f"1. Dados Cadastrais da Operação ({ss.op_nome})")
         pdf.TabelaCadastro(ss)
 
-        pdf.chapter_title('2. Scorecard e Rating Final')
+        pdf.chapter_title(f"2. Análise de Rating ({ss.analise_ref_atual})")
         pdf.TabelaScorecard(ss)
 
-        resultados = ss.rating_final_operacao
+        # Usa os resultados da análise ativa
+        resultados = ss.rating_final_operacao 
         nota_media = resultados.get('nota_media', 0)
         rating_final = resultados.get('rating_final', 'N/A')
 
@@ -262,7 +281,8 @@ def gerar_relatorio_pdf(ss):
 # ==============================================================================
 # FUNÇÕES DE CÁLCULO DE SCORE
 # ==============================================================================
-
+# (Funções: calcular_nota_ltv, calcular_nota_demanda, calcular_nota_behavior, 
+# calcular_nota_comprometimento, calcular_nota_inadimplencia - sem alterações)
 def calcular_nota_ltv(ltv):
     ltv_perc = ltv
     if ltv_perc <= 60: return 10
@@ -301,7 +321,10 @@ def calcular_nota_inadimplencia(soma_inad):
     else: return 2 # > 8
 
 def calcular_rating():
-    """Função principal que calcula todas as notas e o rating final."""
+    """
+    Função principal que calcula todas as notas e o rating final.
+    MODIFICADO: Retorna os dicionários de scores e resultado.
+    """
     
     # 1. Calcular Somas de Penalização
     soma_behavior = (st.session_state.input_behavior_30_60 * 2) + \
@@ -320,21 +343,21 @@ def calcular_rating():
     nota_inad = calcular_nota_inadimplencia(soma_inad)
 
     # 3. Armazenar notas individuais (como ints nativos)
-    st.session_state.scores_operacao = {
+    scores_operacao = {
         'ltv': int(nota_ltv),
         'demanda': int(nota_demanda),
         'behavior': int(nota_behavior),
         'comprometimento': int(nota_comp),
         'inadimplencia': int(nota_inad),
-        'soma_behavior': int(soma_behavior), # Salva para referência
-        'soma_inad': int(soma_inad)          # Salva para referência
+        'soma_behavior': int(soma_behavior),
+        'soma_inad': int(soma_inad)
     }
 
-    # 4. Calcular Média Ponderada (20% cada)
+    # 4. Calcular Média Ponderada
     lista_notas = [nota_ltv, nota_demanda, nota_behavior, nota_comp, nota_inad]
-    nota_media = np.mean(lista_notas) # Média simples é igual a ponderada de 20%
+    nota_media = np.mean(lista_notas)
     
-    # 5. Mapear nota média para a nota final (10, 8, 6, 4, 2)
+    # 5. Mapear nota média para a nota final
     possible_scores = np.array([2, 4, 6, 8, 10])
     idx = np.abs(possible_scores - nota_media).argmin()
     nota_final_arredondada = possible_scores[idx]
@@ -342,13 +365,14 @@ def calcular_rating():
     rating_final = converter_nota_para_rating(nota_final_arredondada)
 
     # 6. Armazenar resultado final
-    # --- CORREÇÃO: CONVERTE TIPOS NUMPY PARA PYTHON ---
-    st.session_state.rating_final_operacao = {
-        'nota_media': float(nota_media), # Converte np.float64 para float
-        'nota_final': int(nota_final_arredondada), # Converte np.int64 para int
-        'rating_final': str(rating_final) # Garante que é string
+    rating_final_operacao = {
+        'nota_media': float(nota_media), 
+        'nota_final': int(nota_final_arredondada),
+        'rating_final': str(rating_final)
     }
-    # --- FIM DA CORREÇÃO ---
+    
+    # 7. Retornar os resultados para salvamento
+    return scores_operacao, rating_final_operacao
 
 # ==============================================================================
 # CALLBACKS DE NAVEGAÇÃO E AÇÕES
@@ -358,67 +382,162 @@ def callback_voltar_painel():
     """Volta para o painel e limpa o formulário."""
     st.session_state.pagina_atual = "painel"
     limpar_formulario_analise()
+    st.session_state.operacao_selecionada_id = None
+
+def callback_voltar_detalhe():
+    """Volta para a página de detalhe (preserva o ID da operação)."""
+    st.session_state.pagina_atual = "detalhe"
+    # Não limpa o formulário, pois os dados da op ainda estão em sessão
 
 def callback_nova_operacao():
-    """Prepara o estado para cadastrar uma nova operação."""
-    limpar_formulario_analise() # Garante que o formulário esteja limpo
+    """Prepara o estado para cadastrar uma nova operação e sua primeira análise."""
+    limpar_formulario_analise() 
     st.session_state.operacao_selecionada_id = str(uuid.uuid4()) # Gera um novo ID
+    st.session_state.analise_ref_atual = "" # Força o usuário a digitar
     st.session_state.pagina_atual = "analise"
 
 def callback_selecionar_operacao(op_id, op_data):
-    """Carrega os dados de uma operação existente no session_state para análise."""
-    st.session_state.pagina_atual = "analise"
-    # st.session_state.operacao_selecionada_id = op_id # <-- PROBLEMA ESTAVA AQUI
-    
-    # Limpa o formulário ANTES de carregar
+    """(Do Painel -> Detalhe) Carrega dados de uma op para a página de DETALHE."""
     limpar_formulario_analise() 
-
-    # Define o ID da operação que estamos carregando *APÓS* limpar
+    st.session_state.pagina_atual = "detalhe"
     st.session_state.operacao_selecionada_id = op_id
 
     # Carrega todos os dados do banco para o session_state
     for key, value in op_data.items():
-        
-        # --- CORREÇÃO DATAS: CONVERTE DATETIME (DO FIRESTORE) PARA DATE (PARA O WIDGET) ---
         if key in ['op_data_emissao', 'op_data_vencimento'] and isinstance(value, datetime.datetime):
-            st.session_state[key] = value.date() # Pega apenas a parte da data
-        
+            st.session_state[key] = value.date()
         else:
             st.session_state[key] = value
 
+def callback_ir_para_analise(analise_ref_para_editar):
+    """(Do Detalhe -> Análise) Prepara o editor para criar ou editar uma análise."""
+    st.session_state.pagina_atual = "analise"
+    
+    if analise_ref_para_editar is None:
+        # --- CRIAR NOVA ANÁLISE ---
+        # Mantém dados cadastrais, limpa apenas os de análise
+        st.session_state.analise_ref_atual = "" # Força usuário a digitar
+        st.session_state.input_ltv = DEFAULTS['input_ltv']
+        st.session_state.input_demanda = DEFAULTS['input_demanda']
+        st.session_state.input_behavior_30_60 = 0
+        st.session_state.input_behavior_60_90 = 0
+        st.session_state.input_behavior_90_mais = 0
+        st.session_state.input_comprometimento = DEFAULTS['input_comprometimento']
+        st.session_state.input_inad_30_60 = 0
+        st.session_state.input_inad_60_90 = 0
+        st.session_state.input_inad_90_mais = 0
+        st.session_state.justificativa_final = ""
+        st.session_state.scores_operacao = {}
+        st.session_state.rating_final_operacao = {}
+        
+    else:
+        # --- EDITAR ANÁLISE EXISTENTE ---
+        st.session_state.analise_ref_atual = analise_ref_para_editar
+        
+        # Carrega os dados daquela análise específica para o formulário
+        try:
+            dados_analise = st.session_state.historico_analises[analise_ref_para_editar]
+            
+            # Carrega Inputs
+            inputs = dados_analise.get('inputs', {})
+            st.session_state.input_ltv = inputs.get('input_ltv', DEFAULTS['input_ltv'])
+            st.session_state.input_demanda = inputs.get('input_demanda', DEFAULTS['input_demanda'])
+            st.session_state.input_behavior_30_60 = inputs.get('input_behavior_30_60', 0)
+            st.session_state.input_behavior_60_90 = inputs.get('input_behavior_60_90', 0)
+            st.session_state.input_behavior_90_mais = inputs.get('input_behavior_90_mais', 0)
+            st.session_state.input_comprometimento = inputs.get('input_comprometimento', DEFAULTS['input_comprometimento'])
+            st.session_state.input_inad_30_60 = inputs.get('input_inad_30_60', 0)
+            st.session_state.input_inad_60_90 = inputs.get('input_inad_60_90', 0)
+            st.session_state.input_inad_90_mais = inputs.get('input_inad_90_mais', 0)
+            
+            # Carrega Resultados Anteriores (para visualização na aba 'Resultado')
+            st.session_state.scores_operacao = dados_analise.get('scores', {})
+            st.session_state.rating_final_operacao = dados_analise.get('resultado', {})
+            st.session_state.justificativa_final = dados_analise.get('justificativa', "")
+            
+        except Exception as e:
+            st.error(f"Erro ao carregar dados da análise '{analise_ref_para_editar}': {e}")
+            callback_voltar_detalhe() # Volta se der erro
+
 def callback_deletar_operacao(op_id):
-    """Deleta uma operação do banco de dados Firestore."""
+    """Deleta uma operação inteira (documento) do Firestore."""
     db = get_firestore_client()
     if db is None:
         return
-        
     try:
+        # Deletar um documento principal (e suas subcoleções, se existissem)
+        # Como o histórico está no documento, isso deleta tudo.
         db.collection(DB_COLLECTION).document(op_id).delete()
         st.toast(f"Operação {op_id} deletada.", icon="🗑️")
+        st.rerun() # Força recarregar o painel
     except Exception as e:
         st.error(f"Erro ao deletar operação: {e}")
 
 def callback_calcular_e_salvar():
-    """Calcula o rating e salva a operação no banco de dados Firestore."""
-    if not st.session_state.operacao_selecionada_id:
+    """Calcula o rating e salva a operação (dados estáticos + histórico) no Firestore."""
+    
+    op_id = st.session_state.operacao_selecionada_id
+    analise_ref = st.session_state.analise_ref_atual
+    
+    if not op_id:
         st.error("Erro: ID da operação não definido. Tente novamente.")
         return
+    if not analise_ref or analise_ref == "":
+        st.error("Erro: A 'Referência da Análise' (Ex: 2025-Q4) é obrigatória.")
+        return
         
-    # 1. Calcula os scores (agora já converte os tipos internamente)
-    calcular_rating() 
+    # 1. Calcula os scores e resultados
+    scores, resultado = calcular_rating()
     
-    # 2. Coleta dados da sessão (já convertendo datas)
-    dados_para_salvar = coletar_dados_da_sessao()
+    # Atualiza o session_state para a aba 'Resultado' ver
+    st.session_state.scores_operacao = scores
+    st.session_state.rating_final_operacao = resultado
     
-    # 3. Carrega o DB, atualiza e salva
+    # 2. Prepara o pacote de dados desta análise
+    dados_analise_nova = {
+        'data_analise': datetime.datetime.now(), # Timestamp para ordenação
+        'justificativa': st.session_state.justificativa_final,
+        'inputs': {
+            'input_ltv': st.session_state.input_ltv,
+            'input_demanda': st.session_state.input_demanda,
+            'input_behavior_30_60': st.session_state.input_behavior_30_60,
+            'input_behavior_60_90': st.session_state.input_behavior_60_90,
+            'input_behavior_90_mais': st.session_state.input_behavior_90_mais,
+            'input_comprometimento': st.session_state.input_comprometimento,
+            'input_inad_30_60': st.session_state.input_inad_30_60,
+            'input_inad_60_90': st.session_state.input_inad_60_90,
+            'input_inad_90_mais': st.session_state.input_inad_90_mais,
+        },
+        'scores': scores,
+        'resultado': resultado
+    }
+    
+    # 3. Coleta dados estáticos (cadastrais)
+    dados_para_salvar = coletar_dados_estaticos_da_sessao()
+    
+    # 4. Atualiza o histórico de análises
+    # Pega o histórico existente no session_state (que foi carregado do DB)
+    historia_atual = st.session_state.get('historico_analises', {})
+    historia_atual[analise_ref] = dados_analise_nova # Adiciona ou sobrescreve a análise
+    
+    dados_para_salvar['historico_analises'] = historia_atual
+    
+    # 5. Salva o documento inteiro no Firestore
     db = get_firestore_client()
     if db is None:
         return
         
     try:
-        op_id = st.session_state.operacao_selecionada_id
+        # .set() sobrescreve o documento inteiro com os dados estáticos + histórico atualizado
         db.collection(DB_COLLECTION).document(op_id).set(dados_para_salvar)
-        st.success(f"Operação '{st.session_state.op_nome}' salva com sucesso!")
+        st.success(f"Análise '{analise_ref}' da operação '{st.session_state.op_nome}' salva com sucesso!")
+        
+        # Atualiza o session_state local para refletir o salvamento
+        st.session_state.historico_analises = historia_atual
+        
+        # Volta para a página de detalhe
+        callback_voltar_detalhe()
+
     except Exception as e:
         st.error(f"Erro ao salvar no Firestore: {e}")
 
@@ -429,29 +548,30 @@ def callback_calcular_e_salvar():
 def renderizar_tabela_operacoes(operacoes_dict):
     """Função auxiliar para renderizar a tabela de operações em um painel."""
     
-    # Define as colunas do painel
     col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
     col1.markdown("**Nome da Operação**")
     col2.markdown("**Código**")
-    col3.markdown("**Rating Final**")
+    col3.markdown("**Rating (Mais Recente)**")
     col4.markdown("**Ação**")
     col5.markdown("**Excluir**")
 
-    # Itera e exibe cada operação
     for op_id, op_data in operacoes_dict.items():
         op_nome = op_data.get('op_nome', 'Sem Nome')
         op_codigo = op_data.get('op_codigo', 'N/A')
         
-        # Pega o rating final calculado, se existir
-        rating_info = op_data.get('rating_final_operacao', {})
-        rating_final = rating_info.get('rating_final', 'N/A')
+        # Pega o rating final da análise MAIS RECENTE
+        ref, analise_recente = get_latest_analysis(op_data.get('historico_analises', {}))
+        
+        if analise_recente:
+            rating_final = analise_recente['resultado'].get('rating_final', 'N/A')
+        else:
+            rating_final = 'N/A'
         
         with st.container():
             c1, c2, c3, c4, c5 = st.columns([3, 2, 1, 1, 1])
             c1.write(op_nome)
             c2.write(op_codigo)
             
-            # Adiciona cor ao rating
             if rating_final.startswith('A'):
                 c3.markdown(f"**<span style='color:green;'>{rating_final}</span>**", unsafe_allow_html=True)
             elif rating_final == 'B':
@@ -461,7 +581,7 @@ def renderizar_tabela_operacoes(operacoes_dict):
             else:
                 c3.write(rating_final)
 
-            # Botões de Ação
+            # MODIFICADO: Botão agora chama 'callback_selecionar_operacao'
             c4.button("Analisar", key=f"analisar_{op_id}", on_click=callback_selecionar_operacao, args=(op_id, op_data), use_container_width=True)
             c5.button("🗑️", key=f"deletar_{op_id}", on_click=callback_deletar_operacao, args=(op_id,), use_container_width=True, help="Deletar operação")
 
@@ -471,7 +591,7 @@ def renderizar_painel():
     
     if st.button("Cadastrar Nova Operação", type="primary", use_container_width=True):
         callback_nova_operacao()
-        st.rerun() # Força o rerender para a página de análise
+        st.rerun() 
 
     st.divider()
     
@@ -481,19 +601,9 @@ def renderizar_painel():
         st.info("Nenhuma operação cadastrada. Clique em 'Cadastrar Nova Operação' para começar.")
         return
 
-    # MODIFICADO: Remove subheader e colunas fixas daqui
-    # st.subheader(f"Operações Cadastradas ({len(db_data)})")
-    
-    # # Define as colunas do painel
-    # col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
-    # ... (loop for removido daqui e movido para renderizar_tabela_operacoes) ...
-
-    # ADICIONADO: Abas para segmentar operações
     tab_interna, tab_externa = st.tabs(["Operações Internas", "Operações Externas"])
 
-    # Filtrar operações
     ops_internas = {id: data for id, data in db_data.items() if data.get('op_tipo') == 'Interna'}
-    # Operações "Externas" ou "Não Classificadas" (antigas)
     ops_externas = {id: data for id, data in db_data.items() if data.get('op_tipo') != 'Interna'}
 
     with tab_interna:
@@ -501,7 +611,6 @@ def renderizar_painel():
         if not ops_internas:
             st.info("Nenhuma operação interna cadastrada.")
         else:
-            # Chamar a nova função auxiliar
             renderizar_tabela_operacoes(ops_internas)
 
     with tab_externa:
@@ -509,34 +618,132 @@ def renderizar_painel():
         if not ops_externas:
             st.info("Nenhuma operação externa cadastrada.")
         else:
-            # Chamar a nova função auxiliar
             renderizar_tabela_operacoes(ops_externas)
             
-    # CORREÇÃO: Removida a 'key' do st.divider, que estava causando o TypeError.
-    # Esta key não é necessária para um elemento decorativo.
     st.divider()
 
+def renderizar_detalhe():
+    """(NOVA PÁGINA) Renderiza a página de detalhe da operação, mostrando o histórico."""
+    
+    if st.button("⬅️ Voltar ao Painel"):
+        callback_voltar_painel()
+        st.rerun()
+
+    st.header(f"Detalhe da Operação: {st.session_state.op_nome}")
+    
+    # --- 1. DADOS CADASTRAIS (READ-ONLY) ---
+    st.subheader("Dados Cadastrais")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        c1.text_input("Código", value=st.session_state.op_codigo, disabled=True)
+        c2.text_input("Tipo", value=st.session_state.op_tipo, disabled=True)
+        c3.text_input("Emissor", value=st.session_state.op_emissor, disabled=True)
+        
+        c1, c2, c3 = st.columns(3)
+        c1.text_input("Volume (R$)", value=f"{st.session_state.op_volume:,.2f}", disabled=True)
+        c2.text_input("Taxa", value=f"{st.session_state.op_indexador} {st.session_state.op_taxa}%", disabled=True)
+        c3.text_input("Amortização", value=st.session_state.op_amortizacao, disabled=True)
+    
+    st.divider()
+
+    # --- 2. PAINEL DE ANÁLISE (RATING MAIS RECENTE) ---
+    st.subheader("Rating Mais Recente")
+    historico = st.session_state.get('historico_analises', {})
+    ref_recente, analise_recente = get_latest_analysis(historico)
+    
+    if not analise_recente:
+        st.info("Nenhuma análise de rating foi criada para esta operação ainda.")
+        st.button("Criar Primeira Análise", on_click=callback_ir_para_analise, args=(None,), type="primary", use_container_width=True)
+    else:
+        resultado = analise_recente.get('resultado', {})
+        st.markdown(f"**Referência da Análise:** `{ref_recente}`")
+        
+        c_gauge, c_metrics = st.columns([2, 1])
+        with c_gauge:
+            st.plotly_chart(create_gauge_chart(resultado.get('nota_media'), "Score Médio Ponderado"), use_container_width=True)
+        with c_metrics:
+            st.metric("Score Médio (0-10)", f"{resultado.get('nota_media', 0):.2f}")
+            st.metric("Nota Final", f"{int(resultado.get('nota_final', 0)):.0f}")
+            st.metric("Rating Final Atribuído", resultado.get('rating_final', 'N/A'))
+        
+        with st.expander("Ver Justificativa da Análise"):
+            st.caption(f"Justificativa para '{ref_recente}':")
+            st.markdown(f"> {analise_recente.get('justificativa', '_Sem justificativa._')}")
+        
+        st.divider()
+
+        # --- 3. GRÁFICO HISTÓRICO ---
+        st.subheader("Histórico de Rating (Nota Final)")
+        if len(historico) < 2:
+            st.info("É necessária mais de uma análise para exibir o gráfico de histórico.")
+        else:
+            try:
+                data_list = []
+                for ref, data in historico.items():
+                    data_list.append({
+                        'Referência': ref,
+                        'Nota Final': data['resultado']['nota_final'],
+                        'Data': data.get('data_analise', datetime.datetime.min) # Usa timestamp
+                    })
+                
+                df_hist = pd.DataFrame(data_list).sort_values('Data')
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df_hist['Referência'], 
+                    y=df_hist['Nota Final'],
+                    mode='lines+markers',
+                    line=dict(shape='spline', smoothing=0.3), # Linha suave
+                    marker=dict(size=8)
+                ))
+                fig.update_layout(
+                    title="Evolução da Nota Final da Operação",
+                    xaxis_title="Referência da Análise",
+                    yaxis_title="Nota Final (2-10)",
+                    yaxis=dict(range=[1, 11]) # Trava o eixo Y de 1 a 11
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Erro ao gerar gráfico: {e}")
+
+        # --- 4. AÇÕES DE ANÁLISE ---
+        st.subheader("Ações")
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.button("Criar Nova Análise", on_click=callback_ir_para_analise, args=(None,), type="primary", use_container_width=True, help="Cria um novo registro de rating (ex: para o próximo trimestre).")
+        
+        with c2:
+            refs_analises = list(historico.keys())
+            ref_para_editar = st.selectbox("Selecione uma análise para editar:", refs_analises, index=refs_analises.index(ref_recente))
+            st.button("Editar Análise Selecionada", on_click=callback_ir_para_analise, args=(ref_para_editar,), use_container_width=True, help="Carrega e permite sobrescrever uma análise anterior.")
 
 def renderizar_analise():
     """Renderiza a página de análise (abas de cadastro, inputs, resultado)."""
     
-    if st.button("⬅️ Voltar ao Painel"):
-        callback_voltar_painel()
-        st.rerun() # Força o rerender para a página do painel
+    # Botão de voltar agora leva para o 'detalhe'
+    if st.button("⬅️ Voltar para Detalhes da Operação"):
+        callback_voltar_detalhe()
+        st.rerun() 
 
     # Título da página de análise
-    if st.session_state.op_nome == DEFAULTS['op_nome']:
-        st.header("Cadastrar Nova Operação")
-    else:
-        st.header(f"Analisando: {st.session_state.op_nome}")
+    st.header(f"Analisando: {st.session_state.op_nome}")
+    
+    # --- NOVO CAMPO OBRIGATÓRIO: REFERÊNCIA DA ANÁLISE ---
+    st.text_input(
+        "**Referência da Análise (Obrigatório)**", 
+        key='analise_ref_atual',
+        help="Defina um identificador único para esta análise (Ex: 2025-Q4, 2026-Q1, etc.)"
+    )
     
     # --- DEFINIÇÃO DAS ABAS ---
     tab0, tab_inputs, tab_res, tab_met = st.tabs([
-        "Cadastro", "Inputs do Rating", "Resultado", "Metodologia"
+        "Dados Cadastrais", "Inputs do Rating", "Resultado", "Metodologia"
     ])
 
     with tab0:
-        st.header("Informações Gerais da Operação")
+        st.header("Informações Gerais da Operação (Dados Cadastrais)")
+        st.info("Estes dados são compartilhados por todas as análises desta operação.")
         col1, col2 = st.columns(2)
         with col1:
             st.text_input("Nome/Identificação da CCI:", key='op_nome')
@@ -554,8 +761,6 @@ def renderizar_analise():
                 key='op_data_vencimento',
                 min_value=st.session_state.op_data_emissao
             )
-        
-        # ADICIONADO: Seletor para tipo de operação
         st.radio(
             "Tipo de Operação:", 
             ["Interna", "Externa"], 
@@ -563,26 +768,22 @@ def renderizar_analise():
             horizontal=True, 
             help="Classifique a operação como Interna (da própria gestora) ou Externa."
         )
-        
         st.text_input("Emissor da CCI (Ex: Banco, Securitizadora):", key='op_emissor')
 
     with tab_inputs:
-        st.header("Inputs para o Rating")
-        st.markdown("Preencha os 5 atributos abaixo para gerar o score.")
-
+        st.header(f"Inputs para a Análise '{st.session_state.analise_ref_atual or '...'} '")
+        st.markdown("Preencha os 5 atributos abaixo para gerar o score desta análise.")
+        # (O conteúdo desta aba (widgets) permanece o mesmo)
         col1, col2 = st.columns(2)
-        
         with col1:
             with st.container(border=True):
                 st.subheader("1. LTV (Loan-to-Value)")
                 st.number_input("LTV da operação (%)", key='input_ltv', min_value=0.0, max_value=200.0, step=1.0, format="%.2f")
                 st.caption("<=60%: 10 | 60-70: 8 | 70-80: 6 | 80-90: 4 | 90+: 2")
-
             with st.container(border=True):
                 st.subheader("2. Demanda")
                 st.number_input("Valor da Demanda (Ex: R$)", key='input_demanda', min_value=0, step=1000)
                 st.caption(">200k: 10 | 100k-200k: 8 | 50k-100k: 6 | 30k-50k: 4 | <30k: 2")
-
             with st.container(border=True):
                 st.subheader("3. Behavior (Penalização)")
                 st.number_input("Qtd. Atrasos 30-60 dias", key='input_behavior_30_60', min_value=0, step=1)
@@ -590,13 +791,11 @@ def renderizar_analise():
                 st.number_input("Qtd. Atrasos >90 dias", key='input_behavior_90_mais', min_value=0, step=1)
                 st.caption("Penalização: 30-60 (2pts), 60-90 (4pts), >90 (6pts)")
                 st.caption("Soma 0: 10 | Soma 2: 8 | Soma 4: 6 | Soma 6: 4 | Soma >6: 2")
-
         with col2:
             with st.container(border=True):
                 st.subheader("4. Comprometimento de Renda")
                 st.number_input("Comprometimento de Renda (%)", key='input_comprometimento', min_value=0.0, max_value=100.0, step=0.5, format="%.2f")
                 st.caption("<15%: 10 | 15-20%: 8 | 20-25%: 6 | 25-30%: 4 | >30%: 2")
-
             with st.container(border=True):
                 st.subheader("5. Inadimplência (Penalização)")
                 st.number_input("Qtd. Inad. 30-60 dias", key='input_inad_30_60', min_value=0, step=1)
@@ -607,21 +806,19 @@ def renderizar_analise():
                 st.caption("(Nota: Lógica de soma igual ao Behavior, mas faixas de nota diferentes)")
         
         st.divider()
-        if st.button("Calcular e Salvar Rating", use_container_width=True, type="primary", on_click=callback_calcular_e_salvar):
-            # Ação já está no callback
-            st.success("Rating calculado e salvo! Veja a aba 'Resultado'.")
+        st.button("Calcular e Salvar Análise", use_container_width=True, type="primary", on_click=callback_calcular_e_salvar)
 
     with tab_res:
-        st.header("Resultado Final e Atribuição de Rating")
+        st.header(f"Resultado da Análise '{st.session_state.analise_ref_atual or '...'}'")
         
         if not st.session_state.scores_operacao:
-            st.warning("⬅️ Preencha os dados na aba 'Inputs do Rating' e clique em 'Calcular e Salvar Rating'.")
+            st.warning("⬅️ Preencha os dados na aba 'Inputs do Rating' e clique em 'Calcular e Salvar'. Se for uma análise salva, o cálculo será exibido.")
         else:
             scores = st.session_state.scores_operacao
             resultados = st.session_state.rating_final_operacao
             
             st.subheader("Scorecard Mestre")
-            
+            # (O conteúdo desta aba (tabela, métricas) permanece o mesmo)
             nomes_inputs = {
                 'ltv': '1. LTV', 'demanda': '2. Demanda', 'behavior': '3. Behavior',
                 'comprometimento': '4. Comprometimento de Renda', 'inadimplencia': '5. Inadimplência'
@@ -635,7 +832,6 @@ def renderizar_analise():
                     'Atributo': nome, 'Peso': f"{peso*100:.0f}%", 'Nota (2-10)': int(nota),
                     'Rating': rating_input, 'Score Ponderado': f"{nota * peso:.2f}"
                 })
-            
             df_scores = pd.DataFrame(data).set_index('Atributo')
             st.table(df_scores)
             st.divider()
@@ -646,10 +842,8 @@ def renderizar_analise():
             
             st.subheader("Resultado Final Ponderado")
             col_gauge, col_metrics = st.columns([2, 1])
-            
             with col_gauge:
                 st.plotly_chart(create_gauge_chart(nota_media, "Score Médio Ponderado"), use_container_width=True)
-                
             with col_metrics:
                 st.metric("Score Médio (0-10)", f"{nota_media:.2f}")
                 st.metric("Nota Final (Mais Próxima)", f"{int(nota_final):.0f}")
@@ -657,18 +851,19 @@ def renderizar_analise():
             
             st.info(f"Somas de Penalização (Referência): Behavior = {scores.get('soma_behavior', 0)}, Inadimplência = {scores.get('soma_inad', 0)}")
             st.divider()
-            st.text_area("Justificativa e comentários finais (opcional):", height=100, key='justificativa_final')
+            st.text_area("Justificativa e comentários finais (salvos com esta análise):", height=100, key='justificativa_final')
             st.divider()
 
-            st.subheader("⬇️ Download do Relatório")
+            st.subheader("⬇️ Download do Relatório (desta análise)")
             pdf_data = gerar_relatorio_pdf(st.session_state)
             st.download_button(
-                label="Baixar Relatório em PDF", data=pdf_data,
-                file_name=f"Relatorio_CCI_{st.session_state.op_nome.replace(' ', '_')}.pdf",
+                label=f"Baixar PDF ({st.session_state.analise_ref_atual})", data=pdf_data,
+                file_name=f"Relatorio_CCI_{st.session_state.op_nome.replace(' ', '_')}_{st.session_state.analise_ref_atual}.pdf",
                 mime="application/pdf", use_container_width=True
             )
 
     with tab_met:
+        # (Sem alterações nesta aba)
         st.header("Metodologia de Rating")
         st.markdown("Esta metodologia atribui um rating a uma CCI com base em 5 atributos, cada um com peso igual de 20%.")
         st.subheader("1. Atributos e Pesos")
@@ -677,7 +872,6 @@ def renderizar_analise():
         st.markdown("- **Nota 10:** Rating 'A+'\n- **Nota 8:** Rating 'A'\n- **Nota 6:** Rating 'A-'\n- **Nota 4:** Rating 'B'\n- **Nota 2:** Rating 'C'")
         st.subheader("3. Cálculo Final")
         st.markdown("1. A nota de cada um dos 5 atributos (10, 8, 6, 4 ou 2) é calculada.\n2. É calculada a média ponderada das 5 notas (como todas têm 20%, é uma média simples).\n3. A média (ex: 7.8) é então arredondada para a \"Nota Final\" mais próxima da escala (neste caso, 8).\n4. O \"Rating Final\" é atribuído com base nessa \"Nota Final\" (neste caso, 'A').")
-
         with st.expander("Faixas de Pontuação Detalhadas"):
             st.markdown("""
             **Input 1: LTV**
@@ -717,5 +911,7 @@ inicializar_session_state()
 # Roteador de Página
 if st.session_state.pagina_atual == "painel":
     renderizar_painel()
-else:
+elif st.session_state.pagina_atual == "detalhe":
+    renderizar_detalhe()
+else: # pagina_atual == "analise"
     renderizar_analise()
