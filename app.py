@@ -110,14 +110,12 @@ def coletar_dados_da_sessao():
         if key in st.session_state:
             value = st.session_state[key]
             
-            # --- CORREÇÃO: CONVERTE DATE PARA DATETIME ANTES DE SALVAR ---
-            # O Firestore espera datetime.datetime, não datetime.date
+            # --- CORREÇÃO DATAS: CONVERTE DATE PARA DATETIME ANTES DE SALVAR ---
             if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
                 # Converte para datetime adicionando a hora 00:00:00
                 dados[key] = datetime.datetime.combine(value, datetime.datetime.min.time())
             else:
                 dados[key] = value
-            # --- FIM DA CORREÇÃO ---
             
     return dados
 
@@ -140,11 +138,12 @@ def create_gauge_chart(score, title):
 
 def converter_nota_para_rating(nota):
     """Converte a nota (10, 8, 6, 4, 2) para o rating (A+ ... C)."""
-    if nota == 10: return 'A+'
-    elif nota == 8: return 'A'
-    elif nota == 6: return 'A-'
-    elif nota == 4: return 'B'
-    elif nota == 2: return 'C'
+    nota_int = int(nota) # Garante que é um int nativo
+    if nota_int == 10: return 'A+'
+    elif nota_int == 8: return 'A'
+    elif nota_int == 6: return 'A-'
+    elif nota_int == 4: return 'B'
+    elif nota_int == 2: return 'C'
     else: return "N/A"
 
 class PDF(FPDF):
@@ -180,7 +179,7 @@ class PDF(FPDF):
         line_height = self.font_size * 1.5
         col_width = self.epw / 4
         
-        # Garante que as datas sejam formatadas corretamente, mesmo se ainda não foram convertidas
+        # Garante que as datas sejam formatadas corretamente
         data_emissao = ss.op_data_emissao
         if isinstance(data_emissao, datetime.datetime): data_emissao = data_emissao.date()
         
@@ -224,7 +223,7 @@ class PDF(FPDF):
             nota = scores.get(key, 2) # Default 2 se não calculado
             rating = converter_nota_para_rating(nota)
             peso = 0.20
-            row = [nome, f"{peso*100:.0f}%", f"{nota:.0f}", rating, f"{nota * peso:.2f}"]
+            row = [nome, f"{peso*100:.0f}%", f"{int(nota):.0f}", rating, f"{nota * peso:.2f}"]
             for i, item in enumerate(row): self.cell(col_widths[i], line_height, item, border=1, align='C')
             self.ln(line_height)
         self.ln(10)
@@ -319,15 +318,15 @@ def calcular_rating():
     nota_comp = calcular_nota_comprometimento(st.session_state.input_comprometimento)
     nota_inad = calcular_nota_inadimplencia(soma_inad)
 
-    # 3. Armazenar notas individuais
+    # 3. Armazenar notas individuais (como ints nativos)
     st.session_state.scores_operacao = {
-        'ltv': nota_ltv,
-        'demanda': nota_demanda,
-        'behavior': nota_behavior,
-        'comprometimento': nota_comp,
-        'inadimplencia': nota_inad,
-        'soma_behavior': soma_behavior, # Salva para referência
-        'soma_inad': soma_inad          # Salva para referência
+        'ltv': int(nota_ltv),
+        'demanda': int(nota_demanda),
+        'behavior': int(nota_behavior),
+        'comprometimento': int(nota_comp),
+        'inadimplencia': int(nota_inad),
+        'soma_behavior': int(soma_behavior), # Salva para referência
+        'soma_inad': int(soma_inad)          # Salva para referência
     }
 
     # 4. Calcular Média Ponderada (20% cada)
@@ -342,11 +341,13 @@ def calcular_rating():
     rating_final = converter_nota_para_rating(nota_final_arredondada)
 
     # 6. Armazenar resultado final
+    # --- CORREÇÃO: CONVERTE TIPOS NUMPY PARA PYTHON ---
     st.session_state.rating_final_operacao = {
-        'nota_media': nota_media,
-        'nota_final': nota_final_arredondada,
-        'rating_final': rating_final
+        'nota_media': float(nota_media), # Converte np.float64 para float
+        'nota_final': int(nota_final_arredondada), # Converte np.int64 para int
+        'rating_final': str(rating_final) # Garante que é string
     }
+    # --- FIM DA CORREÇÃO ---
 
 # ==============================================================================
 # CALLBACKS DE NAVEGAÇÃO E AÇÕES
@@ -374,12 +375,10 @@ def callback_selecionar_operacao(op_id, op_data):
     # Carrega todos os dados do banco para o session_state
     for key, value in op_data.items():
         
-        # --- CORREÇÃO: CONVERTE DATETIME (DO FIRESTORE) PARA DATE (PARA O WIDGET) ---
-        # O Firestore retorna datetime.datetime, mas o st.date_input precisa de datetime.date
+        # --- CORREÇÃO DATAS: CONVERTE DATETIME (DO FIRESTORE) PARA DATE (PARA O WIDGET) ---
         if key in ['op_data_emissao', 'op_data_vencimento'] and isinstance(value, datetime.datetime):
             st.session_state[key] = value.date() # Pega apenas a parte da data
-        # --- FIM DA CORREÇÃO ---
-            
+        
         else:
             st.session_state[key] = value
 
@@ -401,7 +400,7 @@ def callback_calcular_e_salvar():
         st.error("Erro: ID da operação não definido. Tente novamente.")
         return
         
-    # 1. Calcula os scores
+    # 1. Calcula os scores (agora já converte os tipos internamente)
     calcular_rating() 
     
     # 2. Coleta dados da sessão (já convertendo datas)
@@ -585,7 +584,7 @@ def renderizar_analise():
                 rating_input = converter_nota_para_rating(nota)
                 peso = 0.20
                 data.append({
-                    'Atributo': nome, 'Peso': f"{peso*100:.0f}%", 'Nota (2-10)': nota,
+                    'Atributo': nome, 'Peso': f"{peso*100:.0f}%", 'Nota (2-10)': int(nota),
                     'Rating': rating_input, 'Score Ponderado': f"{nota * peso:.2f}"
                 })
             
@@ -605,7 +604,7 @@ def renderizar_analise():
                 
             with col_metrics:
                 st.metric("Score Médio (0-10)", f"{nota_media:.2f}")
-                st.metric("Nota Final (Mais Próxima)", f"{nota_final:.0f}")
+                st.metric("Nota Final (Mais Próxima)", f"{int(nota_final):.0f}")
                 st.metric("Rating Final Atribuído", rating_final)
             
             st.info(f"Somas de Penalização (Referência): Behavior = {scores.get('soma_behavior', 0)}, Inadimplência = {scores.get('soma_inad', 0)}")
